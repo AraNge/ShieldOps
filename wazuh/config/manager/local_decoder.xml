@@ -1,0 +1,6 @@
+<decoder name="docker-extra">
+  <parent>docker</parent>
+  <prematch>remote=</prematch>
+  <regex>remote="(\S+)"</regex>
+  <order>remote</order>
+</decoder>

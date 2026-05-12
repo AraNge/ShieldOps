@@ -1,0 +1,196 @@
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.14.4
+    hostname: wazuh.manager
+    container_name: shieldops-wazuh
+    restart: always
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -k -s -o /dev/null https://localhost:55000 || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    networks:
+      - shieldops_net
+    environment:
+      - WAZUH_INDEXER_HOSTS=wazuh.indexer:9200
+      - WAZUH_NODE_NAME=manager
+      - WAZUH_CLUSTER_NODES=wazuh.manager
+      - WAZUH_CLUSTER_BIND_ADDR=wazuh.manager
+      - INDEXER_USERNAME=${INDEXER_USERNAME}
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
+      - API_USERNAME=${API_USERNAME}
+      - API_PASSWORD=${API_PASSWORD}
+    volumes:
+      - wazuh_api_configuration:/var/wazuh-manager/api/configuration
+      - wazuh_etc:/var/wazuh-manager/etc
+      - wazuh_logs:/var/wazuh-manager/logs
+      - wazuh_queue:/var/wazuh-manager/queue
+      - wazuh_var_multigroups:/var/wazuh-manager/var/multigroups
+      - ./config/certs/root-ca.pem:/var/wazuh-manager/etc/certs/root-ca.pem
+      - ./config/certs/wazuh.manager.pem:/var/wazuh-manager/etc/certs/manager.pem
+      - ./config/certs/wazuh.manager-key.pem:/var/wazuh-manager/etc/certs/manager-key.pem
+      - ./config/manager/local_rules.xml:/var/ossec/etc/rules/local_rules.xml:ro
+      - ./config/manager/local_decoder.xml:/var/ossec/etc/decoders/local_decoder.xml:ro
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.14.4
+    hostname: wazuh.indexer
+    container_name: shieldops-indexer
+    restart: always
+    ports:
+      - "9200:9200"
+    environment:
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=true
+      - network.host=0.0.0.0
+      - node.name=wazuh.indexer
+      - cluster.initial_cluster_manager_nodes=wazuh.indexer
+      - node.max_local_storage_nodes=1
+      - plugins.security.allow_default_init_securityindex=true
+      - NODES_DN=CN=wazuh.indexer,OU=Wazuh,O=Wazuh,L=California,C=US
+      - API_USERNAME=${API_USERNAME}
+      - API_PASSWORD=${API_PASSWORD}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fks https://localhost:9200/_plugins/_security/health | grep -q '\"status\":\"UP\"'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - shieldops_net
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+      - ./config/certs/root-ca.pem:/usr/share/wazuh-indexer/config/certs/root-ca.pem
+      - ./config/certs/wazuh.indexer-key.pem:/usr/share/wazuh-indexer/config/certs/indexer-key.pem
+      - ./config/certs/wazuh.indexer.pem:/usr/share/wazuh-indexer/config/certs/indexer.pem
+      - ./config/certs/admin.pem:/usr/share/wazuh-indexer/config/certs/admin.pem
+      - ./config/certs/admin-key.pem:/usr/share/wazuh-indexer/config/certs/admin-key.pem
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        /entrypoint.sh &
+        MAIN_PID=$!
+        echo "Waiting for Indexer API on port 9200..."
+        until curl -k -s https://localhost:9200 > /dev/null; do
+          echo "Still waiting for Indexer..."
+          sleep 5
+        done
+        echo "API is UP! Running securityadmin.sh..."
+        OPENSEARCH_JAVA_HOME=/usr/share/wazuh-indexer/jdk /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
+          -cd /usr/share/wazuh-indexer/config/opensearch-security/ \
+          -icl -nhnv \
+          -cacert /usr/share/wazuh-indexer/config/certs/root-ca.pem \
+          -cert /usr/share/wazuh-indexer/config/certs/admin.pem \
+          -key /usr/share/wazuh-indexer/config/certs/admin-key.pem \
+          -h localhost
+        wait $MAIN_PID
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.14.4
+    hostname: wazuh.dashboard
+    container_name: shieldops-dashboard
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-k", "-s", "-o", "/dev/null", "https://localhost:5601/login" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    ports:
+      - 443:5601
+    environment:
+      - SERVER_PORT=5601
+      - SERVER_HOST=0.0.0.0
+      - OPENSEARCH_HOSTS=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=${INDEXER_USERNAME}
+      - INDEXER_PASSWORD=${INDEXER_PASSWORD}
+      - WAZUH_API_URL=https://wazuh.manager
+      - API_USERNAME=${API_USERNAME}
+      - API_PASSWORD=${API_PASSWORD}
+      - DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      - SERVER_SSL_CERTIFICATE=/usr/share/wazuh-dashboard/certs/dashboard.pem
+      - SERVER_SSL_KEY=/usr/share/wazuh-dashboard/certs/dashboard-key.pem
+      - OPENSEARCH_SSL_CERTIFICATE_AUTHORITIES=/usr/share/wazuh-dashboard/certs/root-ca.pem
+    volumes:
+      - ./config/certs/root-ca.pem:/usr/share/wazuh-dashboard/certs/root-ca.pem
+      - ./config/certs/wazuh.dashboard.pem:/usr/share/wazuh-dashboard/certs/dashboard.pem
+      - ./config/certs/wazuh.dashboard-key.pem:/usr/share/wazuh-dashboard/certs/dashboard-key.pem
+      - ./config/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - ./config/agent/ossec.conf:/var/ossec/etc/ossec.conf:ro
+      - ./config/agent/agent.conf:/var/ossec/etc/shared/default/agent.conf:ro
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+      wazuh.manager:
+        condition: service_healthy
+    networks:
+      - shieldops_net
+
+  wazuh.agent:
+    image: wazuh/wazuh-agent:4.14.4
+    container_name: shieldops-agent-container
+    restart: unless-stopped
+    environment:
+      - WAZUH_MANAGER=wazuh.manager
+      - WAZUH_AGENT_NAME=docker-host-agent
+      - WAZUH_REGISTRATION_SSL_AGENT_VERIFY=no
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /usr/bin/docker:/usr/bin/docker:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./config/agent/ossec.conf:/var/ossec/etc/ossec.conf
+      - wazuh-agent-logs:/var/ossec/logs:rw
+    cap_add:
+      - SYS_CHROOT
+      - AUDIT_CONTROL
+    read_only: false
+    tmpfs:
+      - /tmp
+      - /var/log
+      - /root/.cache
+    group_add:
+      - ${HOST_DOCKER_GID}
+    depends_on:
+      - wazuh.manager
+    networks:
+      - shieldops_net
+
+
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh-indexer-data:
+  wazuh-agent-logs:
+
+
+networks:
+  shieldops_net:
+    driver: bridge
+    attachable: true
