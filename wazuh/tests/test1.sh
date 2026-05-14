@@ -1,92 +1,58 @@
 #!/bin/bash
-set -e
 
-echo "🚀 Generating and Testing Wazuh Alerts..."
-
-# ============================================
-# PART 1: Generate test events
-# ============================================
-echo -e "\n📡 Creating test events..."
-
-# Trigger syscheck on all agents
-docker exec shieldops-wazuh /var/ossec/bin/agent_control -R -a 2>/dev/null || true
-
-# Generate failed login attempt
-docker exec shieldops-agent-container bash -c "echo 'test:$(date)' | tee -a /var/log/secure 2>/dev/null || echo 'test:$(date)' | tee -a /var/log/auth.log 2>/dev/null" || true
-
-# Create container lifecycle events
-docker run --rm -d --name wazuh-trigger-1 alpine sleep 15 2>/dev/null || true
+docker run --rm alpine echo "Wazuh Test"
 sleep 3
-docker stop wazuh-trigger-1 2>/dev/null || true
-
-# Generate privileged container alert
-docker run --rm -d --privileged --name wazuh-priv alpine sleep 20 2>/dev/null || true
-sleep 3
-docker stop wazuh-priv 2>/dev/null || true
-
-# Generate multiple containers
-for i in {1..5}; do
-  docker run --rm -d --name "test-$i" alpine sleep 10 2>/dev/null || true
-  sleep 1
-done
-
-echo "✅ Events generated. Waiting 30s for processing..."
-sleep 30
-
-# ============================================
-# PART 2: Test API connectivity
-# ============================================
-echo -e "\n📡 Testing Wazuh API..."
 
 
-TOKEN=$(curl -s -k -u "${API_USERNAME}:${API_PASSWORD}" "https://localhost:55000/security/user/authenticate?raw=true")
+echo "[1/4] Checking agent status on manager..."
+AGENT_STATUS=$(docker exec shieldops-wazuh /var/ossec/bin/agent_control -l 2>/dev/null || echo "")
 
-if [ -z "$TOKEN" ] || [[ "$TOKEN" == *"Unauthorized"* ]]; then
-  echo "❌ Error: Failed to authenticate and retrieve Wazuh API token."
+if [[ -z "$AGENT_STATUS" || ! "$AGENT_STATUS" =~ "Active" ]]; then
+  echo "❌ ERROR: No active agents connected to manager!"
+  echo "Current status output:"
+  docker exec shieldops-wazuh /var/ossec/bin/agent_control -l
+  exit 1
+else
+  echo "✅ Success: Agent is connected and Active."
+fi
+
+
+echo "[2/4] Checking if agent's docker-listener is running..."
+AGENT_LOGS=$(docker logs shieldops-agent-container 2>&1 | grep -i "docker-listener" | tail -n 5 || echo "")
+
+if [[ "$AGENT_LOGS" =~ "ERROR" || "$AGENT_LOGS" =~ "Critical" ]]; then
+  echo "❌ ERROR: Agent docker-listener failed or has permission issues!"
+  docker logs shieldops-agent-container | grep -i "docker-listener" | tail -n 10
+  exit 1
+else
+  echo "✅ Success: Docker-listener on agent initialized without errors."
+fi
+
+echo "[3/4] Triggering Docker event (starting alpine container)..."
+docker run --rm alpine echo "alphine test"
+
+echo "Waiting 5 seconds for network delivery and processing..."
+sleep 5
+
+echo "[4/4] Verifying logs inside manager archives.json..."
+ARCHIVE_PATH="/var/ossec/logs/archives/archives.json"
+
+
+if ! docker exec shieldops-wazuh test -f "$ARCHIVE_PATH"; then
+  echo "❌ ERROR: File $ARCHIVE_PATH does not exist yet."
+  echo "This means Manager has not received ANY logs from ANY agent since startup."
   exit 1
 fi
 
-# Get agents
-echo -e "\n🔹 AGENTS:"
-curl -s -k -H "Authorization: Bearer $TOKEN" -X GET "https://localhost:55000/agents" | \
-  python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-agents = data.get('data', {}).get('affected_items', [])
-print(f'Total agents: {len(agents)}')
-for a in agents:
-    print(f'  [{a[\"id\"]}] {a[\"name\"]} - {a[\"status\"]}')
-" 2>/dev/null || echo "  No agents found"
+GREP_RESULT=$(docker exec shieldops-wazuh tail -n 200 "$ARCHIVE_PATH" | grep -i alpine || echo "")
 
-# Get latest events
-echo -e "\n🔹 LATEST EVENTS:"
-curl -s -k -H "Authorization: Bearer $TOKEN" -X GET "https://localhost:55000/events?limit=5&sort=-timestamp" | \
-  python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-events = data.get('data', {}).get('affected_items', [])
-print(f'Events found: {len(events)}')
-for e in events:
-    rule = e.get('rule', {})
-    print(f'  [{rule.get(\"level\", \"?\")}] {rule.get(\"description\", \"No description\")}')
-    print(f'      Agent: {e.get(\"agent\", {}).get(\"name\", \"N/A\")}')
-" 2>/dev/null || echo "  No events found yet"
-
-# Search Docker events
-echo -e "\n🔹 DOCKER EVENTS:"
-curl -s -k -H "Authorization: Bearer $TOKEN" -X GET "https://localhost:55000/events?limit=3&q=docker" | \
-  python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-events = data.get('data', {}).get('affected_items', [])
-print(f'Docker events: {len(events)}')
-for e in events:
-    print(f'  {e.get(\"rule\", {}).get(\"description\", \"N/A\")}')
-" 2>/dev/null || echo "  No Docker events found"
-
-# Check indices (Здесь оставляем базовую аутентификацию, так как это запрос напрямую к Indexer)
-echo -e "\n🔹 ELASTICSEARCH INDICES:"
-curl -s -k -u admin:admin "https://localhost:9200/_cat/indices/wazuh*?v" 2>/dev/null || echo "  No Wazuh indices yet"
-
-echo -e "\n✅ Test complete!"
-echo "Dashboard: https://localhost (admin/admin)"
+if [ -n "$GREP_RESULT" ]; then
+  echo "🎉 SUCCESS: Manager successfully received Docker logs from Agent!"
+  echo "Found log entry:"
+  echo "$GREP_RESULT" | tail -n 1
+else
+  echo "❌ ERROR: archives.json exists, but 'alpine' event was not found."
+  echo "Last 5 lines of archives.json for debugging:"
+  docker exec shieldops-wazuh tail -n 5 "$ARCHIVE_PATH"
+  exit 1
+fi

@@ -46,30 +46,35 @@ docker exec -u root shieldops-wazuh sh -c "
     sed -i 's|<alerts_log>no</alerts_log>|<alerts_log>yes</alerts_log>|g' /var/ossec/etc/ossec.conf
     sed -i 's|<logall>no</logall>|<logall>yes</logall>|g' /var/ossec/etc/ossec.conf
     sed -i 's|<logall_json>no</logall_json>|<logall_json>yes</logall_json>|g' /var/ossec/etc/ossec.conf
+    sed -i 's|https://0.0.0.0:9200|https://wazuh.indexer:9200|g' /var/ossec/etc/ossec.conf
+    sed -i 's|/etc/filebeat/certs/root-ca.pem|/var/wazuh-manager/etc/certs/root-ca.pem|g' /var/ossec/etc/ossec.conf
+    sed -i 's|/etc/filebeat/certs/filebeat.pem|/var/wazuh-manager/etc/certs/manager.pem|g' /var/ossec/etc/ossec.conf
+    sed -i 's|/etc/filebeat/certs/filebeat-key.pem|/var/wazuh-manager/etc/certs/manager-key.pem|g' /var/ossec/etc/ossec.conf
     echo 'Configuration updated inside container.'
   else
     echo 'ERROR: /var/ossec/etc/ossec.conf is not writable inside container!'
   fi
 "
 
+# Check if alerts section already exists, if not, add it
+docker exec shieldops-wazuh bash -c '
+if ! grep -q "<alerts>" /var/ossec/etc/ossec.conf; then
+  sed -i "/<\/ossec_config>/i \\
+  <alerts>\\
+    <log_format>json</log_format>\\
+    <index>wazuh-alerts</index>\\
+  </alerts>" /var/ossec/etc/ossec.conf
+  echo "Alerts configuration added"
+else
+  echo "Alerts configuration already exists"
+fi
+'
+
 echo "Restarting Wazuh Manager daemon to apply changes..."
 docker exec -u root shieldops-wazuh /var/ossec/bin/wazuh-control restart
 
 
 echo "Wazuh ready: https://localhost"
-
-
-# # 1. Get the docker group GID from the HOST
-# HOST_DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-# echo "Host Docker GID = $HOST_DOCKER_GID"
-
-# # 2. Create the same group inside the agent container and add wazuh user
-# docker exec --user root shieldops-agent-container groupadd -g $HOST_DOCKER_GID docker_host 2>/dev/null || true
-
-# docker exec --user root shieldops-agent-container usermod -aG $HOST_DOCKER_GID wazuh
-
-# # 3. Restart the agent container
-# docker restart shieldops-agent-container
 
 
 docker exec --user root shieldops-agent-container dnf install -y python3 python3-pip
@@ -81,3 +86,8 @@ docker exec --user root shieldops-agent-container ln -sf /usr/bin/python3 /usr/b
 docker restart shieldops-agent-container
 sleep 10
 
+
+docker exec -u root shieldops-wazuh pkill -9 -f filebeat
+sleep 5
+docker exec -u root shieldops-wazuh filebeat setup --index-management --pipelines --modules wazuh --dashboards=false -e
+docker exec -u root shieldops-wazuh /var/ossec/bin/wazuh-control restart

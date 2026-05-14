@@ -1,2 +1,11 @@
-TOKEN=$(curl -k -u "${API_USERNAME}:${API_PASSWORD}" "https://localhost:55000/security/user/authenticate?raw=true")
-curl -k -X GET "https://localhost:55000/agents" -H "Authorization: Bearer $TOKEN"
+#!/bin/bash
+
+
+# Generate a test event
+docker run --rm alpine echo "Test after fix $(date)"
+
+# Wait and check indices
+sleep 25
+
+docker exec shieldops-wazuh curl -k -u admin:admin https://wazuh.indexer:9200/_cat/indices/wazuh-alerts-*?v
+docker exec shieldops-wazuh curl -k -u admin:admin https://wazuh.indexer:9200/_cat/indices/wazuh-archives-*?v

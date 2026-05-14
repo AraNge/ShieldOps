@@ -10,6 +10,11 @@ Secure CI/CD pipeline with automatic vulnerability scanning.
 - Git
 - 8GB RAM, 4 CPU cores
 
+
+### Arhitecture
+
+<img src="./attachments/component diagram.png">
+
 ### Install Terraform
 
 ```bash
