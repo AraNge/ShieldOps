@@ -1,0 +1,40 @@
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shieldops-jenkins
+    restart: unless-stopped
+    ports:
+      - "8080:8080"     # Web UI
+      - "50000:50000"   # Jenkins agents
+    volumes:
+      # Persist Jenkins data
+      - jenkins_home:/var/jenkins_home
+      # Pass Docker socket so Jenkins can run docker commands
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    networks:
+      - jenkins_net
+      - shieldops_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  jenkins_home:
+    driver: local
+
+networks:
+  # Jenkins-only internal network
+  jenkins_net:
+    driver: bridge
+
+  # Shared network with Wazuh (created by wazuh/docker-compose.yml first)
+  # Jenkins joins it so containers can talk to wazuh.manager by hostname
+  shieldops_net:
+    external: true
