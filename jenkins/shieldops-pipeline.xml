@@ -51,7 +51,6 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    echo "=== Cloning repo: ${env.REPO_URL} ==="
                     sh """
                         rm -rf workspace-repo
                         git clone ${env.REPO_URL} workspace-repo
@@ -67,12 +66,9 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    echo "=== Building Docker image: ${env.IMAGE_TAG} ==="
                     sh """
                         if [ -f workspace-repo/Dockerfile ]; then
                             docker build -t ${env.IMAGE_TAG} workspace-repo/
-                        else
-                            echo "No Dockerfile found — scanning repo filesystem instead"
                         fi
                     """
                 }
@@ -82,7 +78,6 @@ pipeline {
         stage('Trivy Scan') {
             steps {
                 script {
-                    echo "=== Running Trivy vulnerability scan ==="
                     def exitCode = sh(
                         returnStatus: true,
                         script: """
@@ -103,12 +98,10 @@ pipeline {
                             fi
                         """
                     )
-                    env.TRIVY_EXIT_CODE = exitCode.toString()
                     env.SCAN_STATUS = (exitCode == 0) ? "success" : "failure"
                     env.SCAN_DESCRIPTION = (exitCode == 0) \
                         ? "ShieldOps: No critical vulnerabilities found" \
-                        : "ShieldOps: CRITICAL vulnerabilities detected!"
-                    echo "Trivy exit code: ${exitCode}"
+                        : "ShieldOps: CRITICAL vulnerabilities detected"
                 }
             }
         }
@@ -123,7 +116,6 @@ pipeline {
                         .replaceAll('https://github.com/', '')
                         .replaceAll('.git', '')
 
-                    echo "=== Posting status to GitHub: ${repoPath} ==="
                     sh """
                         curl -s -X POST \
                             -H "Authorization: token ${env.GITHUB_TOKEN}" \
@@ -153,12 +145,6 @@ pipeline {
     post {
         always {
             archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
-        }
-        success {
-            echo "✅ Scan passed — no critical vulnerabilities"
-        }
-        failure {
-            echo "❌ Scan failed — critical vulnerabilities found or build error"
         }
     }
 }
