@@ -1,0 +1,155 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>ShieldOps - Automatic vulnerability scan via Trivy</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger>
+          <spec></spec>
+          <token>shieldops-trigger</token>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable>
+              <expressionType>JSONPath</expressionType>
+              <key>REPO_URL</key>
+              <value>$.repo_url</value>
+            </org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable>
+              <expressionType>JSONPath</expressionType>
+              <key>COMMIT_SHA</key>
+              <value>$.commit_sha</value>
+            </org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable>
+              <expressionType>JSONPath</expressionType>
+              <key>GITHUB_TOKEN</key>
+              <value>$.github_token</value>
+            </org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <regexpFilterText></regexpFilterText>
+          <regexpFilterExpression></regexpFilterExpression>
+          <printPostContent>true</printPostContent>
+          <printContributedVariables>true</printContributedVariables>
+          <causeString>Triggered by GitHub push</causeString>
+          <silentResponse>false</silentResponse>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_TAG = "shieldops-scan-${env.COMMIT_SHA?.take(7) ?: 'latest'}"
+        TRIVY_SEVERITY = "CRITICAL,HIGH"
+        GITHUB_API = "https://api.github.com"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                script {
+                    sh """
+                        rm -rf workspace-repo
+                        git clone ${env.REPO_URL} workspace-repo
+                        cd workspace-repo
+                        if [ -n "${env.COMMIT_SHA}" ]; then
+                            git checkout ${env.COMMIT_SHA} || true
+                        fi
+                    """
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh """
+                        if [ -f workspace-repo/Dockerfile ]; then
+                            docker build -t ${env.IMAGE_TAG} workspace-repo/
+                        fi
+                    """
+                }
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                script {
+                    def exitCode = sh(
+                        returnStatus: true,
+                        script: """
+                            if docker image inspect ${env.IMAGE_TAG} > /dev/null 2>&1; then
+                                trivy image \
+                                    --severity ${env.TRIVY_SEVERITY} \
+                                    --exit-code 1 \
+                                    --no-progress \
+                                    --format table \
+                                    ${env.IMAGE_TAG} | tee trivy-report.txt
+                            else
+                                trivy fs \
+                                    --severity ${env.TRIVY_SEVERITY} \
+                                    --exit-code 1 \
+                                    --no-progress \
+                                    --format table \
+                                    workspace-repo/ | tee trivy-report.txt
+                            fi
+                        """
+                    )
+                    env.SCAN_STATUS = (exitCode == 0) ? "success" : "failure"
+                    env.SCAN_DESCRIPTION = (exitCode == 0) \
+                        ? "ShieldOps: No critical vulnerabilities found" \
+                        : "ShieldOps: CRITICAL vulnerabilities detected"
+                }
+            }
+        }
+
+        stage('Report to GitHub') {
+            when {
+                expression { env.GITHUB_TOKEN?.trim() && env.COMMIT_SHA?.trim() }
+            }
+            steps {
+                script {
+                    def repoPath = env.REPO_URL
+                        .replaceAll('https://github.com/', '')
+                        .replaceAll('.git', '')
+
+                    sh """
+                        curl -s -X POST \
+                            -H "Authorization: token ${env.GITHUB_TOKEN}" \
+                            -H "Accept: application/vnd.github.v3+json" \
+                            ${env.GITHUB_API}/repos/${repoPath}/statuses/${env.COMMIT_SHA} \
+                            -d '{
+                                "state": "${env.SCAN_STATUS}",
+                                "target_url": "${env.BUILD_URL}",
+                                "description": "${env.SCAN_DESCRIPTION}",
+                                "context": "ShieldOps / Trivy Scan"
+                            }'
+                    """
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                sh """
+                    docker rmi ${env.IMAGE_TAG} || true
+                    rm -rf workspace-repo
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts artifacts: 'trivy-report.txt', allowEmptyArchive: true
+        }
+    }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>
