@@ -8,8 +8,39 @@ Secure CI/CD pipeline with automatic vulnerability scanning.
 - Terraform
 - VirtualBox (for local VM)
 - Git
+- Ngrok account (free tier available at https://ngrok.com)
 - 8GB RAM, 4 CPU cores
+- ⏱️ Setup time: 15-20 minutes
 
+---
+
+### Ngrok Account & Authentication Token
+
+ShieldOps uses ngrok to expose your local Jenkins server to the internet, allowing GitHub to send webhook triggers to your CI/CD pipeline.
+
+
+1. **Create a free ngrok account**: Visit [https://dashboard.ngrok.com/signup](https://dashboard.ngrok.com/signup)
+
+2. **Get your authentication token**: 
+   - Log into your ngrok dashboard
+   - Find your token at [https://dashboard.ngrok.com/get-started/your-authtoken](https://dashboard.ngrok.com/get-started/your-authtoken)
+   - Your token will look like: `2FzK9xYourActualTokenHere`
+
+3. **Why ngrok is required**:
+   - GitHub needs to send webhook events to your Jenkins server
+   - Your local Jenkins (localhost:8080) is not accessible from the internet
+   - ngrok creates a secure tunnel from a public URL to your local Jenkins
+   - This enables automatic trigger on every `git push`
+
+4. **Free tier limitations**:
+   - 1 concurrent tunnel
+   - Random subdomains (e.g., `abc123.ngrok.io`)
+   - 40 connections/minute
+   - Sufficient for development and testing
+
+**Note**: Without a valid ngrok auth token, GitHub cannot trigger automatic scans, and you'll need to manually trigger Jenkins builds.
+
+---
 
 ### Arhitecture
 
@@ -44,7 +75,7 @@ cd ShieldOps
 ```
 
 ### Step 2: Configure Environment Variables
-Create a .env file in the root ShieldOps directory and add your required cluster credentials:
+Create a .env file in the root ShieldOps directory and add your required wazuh credentials:
 
 ```bash
 cat << 'EOF' > .env
@@ -57,20 +88,19 @@ INDEXER_PASSWORD=admin
 EOF
 ```
 
-
 ### Step 3: Start the Infrastructure
 Launch your Jenkins and Wazuh services using the main orchestration script:
 
 ```bash
 chmod +x run.sh
+
+# Method 1: One-liner with token
+NGROK_AUTHTOKEN="2FzK9xYourActualTokenHere" ./run.sh
+
+# Method 2: Export then run
+export NGROK_AUTHTOKEN="2FzK9xYourActualTokenHere"
 ./run.sh
 ```
-
-After deployment completes, the following services will be available:
-
-* Jenkins Engine: http://localhost:8080
-* Wazuh Dashboard: http://localhost:55000
-
 
 ---
 
@@ -83,18 +113,18 @@ name: ShieldOps Security Scan
 
 on: [push, pull_request]
 
-jobs: 
-scan: 
-runs-on: ubuntu-latest 
-steps: 
-- run: | 
-curl -X POST http://your-jenkins-ip:8080/generic-webhook-trigger/invoke?token=shieldops-trigger \ 
--H "Content-Type: application/json" \ 
--d '{ 
-"repo_url": "https://github.com/${{ github.repository }}", 
-"commit_sha": "${{ github.sha }}", 
-"github_token": "${{ secrets.GITHUB_TOKEN }}" 
-}'
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Jenkins Scan
+        run: |
+          curl -X POST http://your-jenkins-ip:8080/generic-webhook-trigger/invoke?token=shieldops-trigger \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repo_url": "https://github.com/${{ github.repository }}",
+            "commit_sha": "${{ github.sha }}"
+          }'
 ```
 
 ---

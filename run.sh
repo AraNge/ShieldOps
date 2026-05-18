@@ -48,7 +48,7 @@ sshpass -p "vagrant" scp -o StrictHostKeyChecking=no -r "$SCRIPT_DIR" vagrant@$V
 
 # Install Wazuh
 echo "Installing Wazuh on the VM..."
-sshpass -p "vagrant" ssh -o StrictHostKeyChecking=no vagrant@$VM_IP "
+sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP "
     cd /home/vagrant/shieldops/wazuh && 
     chmod +x setup.sh && 
     ./setup.sh
@@ -56,16 +56,61 @@ sshpass -p "vagrant" ssh -o StrictHostKeyChecking=no vagrant@$VM_IP "
 
 # Install Jenkins
 echo "Installing Jenkins on the VM..."
-sshpass -p "vagrant" ssh -o StrictHostKeyChecking=no vagrant@$VM_IP "
+sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP "
     cd /home/vagrant/shieldops/jenkins && 
     chmod +x setup.sh && 
     ./setup.sh
 "
 
+
+echo "Setting up Ngrok tunnel for Jenkins (ShieldOps Security Scan)..."
+
+sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP '
+    cd /home/vagrant/shieldops/jenkins
+
+    # Install ngrok
+    if ! command -v ngrok &> /dev/null; then
+        echo "Installing ngrok..."
+        curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+        | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null \
+        && echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" \
+        | sudo tee /etc/apt/sources.list.d/ngrok.list \
+        && sudo apt update \
+        && sudo apt install ngrok
+    fi
+
+    # Add authtoken from host environment variable
+    echo "🔑 Configuring Ngrok authtoken..."
+    ngrok config add-authtoken '"$NGROK_AUTHTOKEN"'
+
+    # Kill any old tunnel
+    pkill ngrok 2>/dev/null || true
+
+    # Start ngrok
+    echo "Starting Ngrok tunnel..."
+    nohup ngrok http 8080 --name "ShieldOps-Security-Scan" > /tmp/ngrok.log 2>&1 &
+    sleep 5
+
+    NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o "https://[^\"]*" | head -n1)
+    echo "Ngrok Public URL: $NGROK_URL"
+'
+
+# Get final Ngrok URL
+NGROK_URL=$(sshpass -p "vagrant" ssh -o StrictHostKeyChecking=no vagrant@$VM_IP "
+    sleep 3
+    curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^\"]*' | head -n1
+" 2>/dev/null || echo "Not available yet")
+
 echo ""
 echo "ShieldOps is ready!"
-echo "Jenkins → http://$VM_IP:8080"
-echo "Wazuh   → http://$VM_IP:55000"
+echo "=================================================="
+echo "VM IP            : $VM_IP"
+echo "Jenkins Local    : http://$VM_IP:8080"
+echo "Jenkins Public   : ${NGROK_URL}"
+echo "Wazuh            : http://$VM_IP:55000"
+echo "=================================================="
+echo "Ngrok Name       : ShieldOps-Security-Scan"
 echo ""
-echo "VM IP: $VM_IP"
-echo "SSH Access: ssh vagrant@$VM_IP"
+echo "GitHub Webhook URL:"
+echo "${NGROK_URL}/generic-webhook-trigger/invoke?token=shieldops-trigger"
+echo ""
