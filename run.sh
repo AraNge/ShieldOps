@@ -46,14 +46,6 @@ done
 echo "Copying ShieldOps files to the VM..."
 sshpass -p "vagrant" scp -o StrictHostKeyChecking=no -r "$SCRIPT_DIR" vagrant@$VM_IP:/home/vagrant/shieldops/
 
-# Install Wazuh
-echo "Installing Wazuh on the VM..."
-sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP "
-    cd /home/vagrant/shieldops/wazuh && 
-    chmod +x setup.sh && 
-    ./setup.sh
-"
-
 # Install Jenkins
 echo "Installing Jenkins on the VM..."
 sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP "
@@ -100,6 +92,14 @@ NGROK_URL=$(sshpass -p "vagrant" ssh -o StrictHostKeyChecking=no vagrant@$VM_IP 
     sleep 3
     curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^\"]*' | head -n1
 " 2>/dev/null || echo "Not available yet")
+
+# Install Wazuh
+echo "Installing Wazuh on the VM..."
+sshpass -p "vagrant" ssh -o ServerAliveInterval=60 -o StrictHostKeyChecking=no vagrant@$VM_IP "
+    cd /home/vagrant/shieldops/wazuh && 
+    chmod +x setup.sh && 
+    ./setup.sh
+"
 
 echo ""
 echo "ShieldOps is ready!"
